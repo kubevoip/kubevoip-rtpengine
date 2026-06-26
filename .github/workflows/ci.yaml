@@ -5,7 +5,9 @@ on:
     branches: [main]
     tags: ["v*.*.*"]
 permissions:
+  attestations: write
   contents: write
+  id-token: write
   packages: write
 env:
   IMAGE: ghcr.io/kubevoip/kubevoip-rtpengine
@@ -38,7 +40,8 @@ jobs:
           else
             echo "tag=ci-${GITHUB_SHA::12}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
           fi
-      - uses: docker/build-push-action@v7.2.0
+      - id: build
+        uses: docker/build-push-action@v7.2.0
         with:
           context: .
           file: Dockerfile
@@ -47,6 +50,13 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+      - name: Attest architecture image
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v4.1.0
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   smoke:
     runs-on: ubuntu-24.04
@@ -75,12 +85,21 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - run: |
+      - id: manifest
+        run: |
           docker buildx imagetools create \
             --tag "${IMAGE}:${GITHUB_REF_NAME}" \
             "${IMAGE}:${GITHUB_REF_NAME}-amd64" \
             "${IMAGE}:${GITHUB_REF_NAME}-arm64"
           docker buildx imagetools inspect "${IMAGE}:${GITHUB_REF_NAME}"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${GITHUB_REF_NAME}" --format '{{ .Manifest.Digest }}')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Attest multi-architecture image
+        uses: actions/attest-build-provenance@v4.1.0
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
